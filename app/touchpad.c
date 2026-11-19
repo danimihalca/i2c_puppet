@@ -1,6 +1,7 @@
 #include "touchpad.h"
 
 #include "keyboard.h"
+#include "reg.h"
 
 #include <hardware/i2c.h>
 #include <pico/binary_info.h>
@@ -31,6 +32,14 @@
 
 #define SWIPE_COOLDOWN_TIME_MS	100 // time to wait before generating a new swipe event
 #define SWIPE_RELEASE_DELAY_MS	10  // time to wait before sending key release event
+// Arrow-key mode (CF2_TOUCH_KEYS): motion is accumulated and one key is sent per
+// TOUCH_KEYS_STEP counts, so a short swipe gives one key and a long one gives several.
+#define TOUCH_KEYS_STEP			8   // counts per key press (lower = more sensitive)
+#define TOUCH_KEYS_MIN_GAP_MS	15  // minimum time between two key presses (must be > SWIPE_RELEASE_DELAY_MS)
+#define TOUCH_KEYS_IDLE_MS		150 // pause after which a new gesture starts and the accumulators reset
+#ifndef ABS
+#define ABS(a)					((a) < 0 ? -(a) : (a))
+#endif
 #define MOTION_IS_SWIPE(i, j)	(((i >= 15) || (i <= -15)) && ((j >= -5) && (j <= 5)))
 
 static i2c_inst_t *i2c_instances[2] = { i2c0, i2c1 };
@@ -39,6 +48,8 @@ static struct
 {
 	struct touch_callback *callbacks;
 	uint32_t last_swipe_time;
+	int32_t acc_x, acc_y;
+	uint32_t last_motion_time, last_key_time;
 	i2c_inst_t *i2c;
 } self;
 
@@ -85,7 +96,7 @@ void touchpad_gpio_irq(uint gpio, uint32_t events)
 		x = ((x < 127) ? x : (x - 256)) * -1;
 		y = ((y < 127) ? y : (y - 256));
 
-		if (keyboard_is_mod_on(KEY_MOD_ID_ALT)) {
+		if (keyboard_is_mod_on(KEY_MOD_ID_ALT) ) {
 			if (to_ms_since_boot(get_absolute_time()) - self.last_swipe_time > SWIPE_COOLDOWN_TIME_MS) {
 				char key = '\0';
 				if (MOTION_IS_SWIPE(y, x)) {
@@ -101,6 +112,41 @@ void touchpad_gpio_irq(uint gpio, uint32_t events)
 					add_alarm_in_ms(SWIPE_RELEASE_DELAY_MS, release_key, (void*)(int)key, true);
 
 					self.last_swipe_time = to_ms_since_boot(get_absolute_time());
+				}
+			}
+		} else if (reg_is_bit_set(REG_ID_CF2, CF2_TOUCH_KEYS)) {
+			const uint32_t now = to_ms_since_boot(get_absolute_time());
+
+			if (now - self.last_motion_time > TOUCH_KEYS_IDLE_MS)
+				self.acc_x = self.acc_y = 0;
+			self.last_motion_time = now;
+
+			self.acc_x += x;
+			self.acc_y += y;
+
+			// don't let a hard flick queue up an unbounded number of presses
+			self.acc_x = MAX(-4 * TOUCH_KEYS_STEP, MIN(self.acc_x, 4 * TOUCH_KEYS_STEP));
+			self.acc_y = MAX(-4 * TOUCH_KEYS_STEP, MIN(self.acc_y, 4 * TOUCH_KEYS_STEP));
+
+			if (now - self.last_key_time >= TOUCH_KEYS_MIN_GAP_MS) {
+				char key = '\0';
+
+				if (ABS(self.acc_x) >= ABS(self.acc_y)) {
+					if (ABS(self.acc_x) >= TOUCH_KEYS_STEP) {
+						key = (self.acc_x < 0) ? KEY_JOY_LEFT : KEY_JOY_RIGHT;
+						self.acc_x -= (self.acc_x < 0) ? -TOUCH_KEYS_STEP : TOUCH_KEYS_STEP;
+						self.acc_y = 0;
+					}
+				} else if (ABS(self.acc_y) >= TOUCH_KEYS_STEP) {
+					key = (self.acc_y < 0) ? KEY_JOY_UP : KEY_JOY_DOWN;
+					self.acc_y -= (self.acc_y < 0) ? -TOUCH_KEYS_STEP : TOUCH_KEYS_STEP;
+					self.acc_x = 0;
+				}
+
+				if (key != '\0') {
+					keyboard_inject_event(key, KEY_STATE_PRESSED);
+					add_alarm_in_ms(SWIPE_RELEASE_DELAY_MS, release_key, (void*)(int)key, true);
+					self.last_key_time = now;
 				}
 			}
 		} else {

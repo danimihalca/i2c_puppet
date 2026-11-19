@@ -199,7 +199,7 @@ void reg_init(void)
 	reg_set_value(REG_ID_HLD, 30);	// 10ms units
 	reg_set_value(REG_ID_ADR, 0x1F);
 	reg_set_value(REG_ID_IND, 1);	// ms
-	reg_set_value(REG_ID_CF2, CF2_TOUCH_INT | CF2_USB_KEYB_ON | CF2_USB_MOUSE_ON);
+	reg_set_value(REG_ID_CF2, CF2_TOUCH_INT | CF2_USB_KEYB_ON | CF2_USB_MOUSE_ON | CF2_TOUCH_KEYS);
 
 	touchpad_add_touch_callback(&touch_callback);
 }

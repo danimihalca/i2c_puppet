@@ -43,6 +43,7 @@ enum reg_id
 #define CF2_TOUCH_INT		(1 << 0) // Should touch events generate interrupts
 #define CF2_USB_KEYB_ON		(1 << 1) // Should key events be sent over USB HID
 #define CF2_USB_MOUSE_ON	(1 << 2) // Should touch events be sent over USB HID
+#define CF2_TOUCH_KEYS		(1 << 3) // Touchpad swipes send arrow keys instead of mouse movement (on at boot; toggled by L2+R1, see keyboard.c)
 // TODO? CF2_STICKY_MODS // Pressing and releasing a mod affects next key pressed
 
 #define INT_OVERFLOW		(1 << 0)

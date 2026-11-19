@@ -77,6 +77,76 @@ static struct
 	bool numlock;
 } self;
 
+// L2 + R1 pressed together toggle CF2_TOUCH_KEYS and are NOT reported to the host.
+// To make that possible a press of either key is held back until it is clear whether the
+// other one follows: a tap is reported on release, a long press once the hold time passes
+// (so these two keys report slightly later than the rest). The release of a held-back tap
+// is sent COMBO_RELEASE_TICKS poll ticks after its press, so USB can send both reports.
+#define COMBO_RELEASE_TICKS	2
+
+static struct
+{
+	bool pending;			// press seen, not reported yet
+	bool swallow;			// part of a combo: drop everything until release
+	uint8_t release_ticks;	// >0: release still to be reported
+	char key;
+} combo[2] = { { .key = KEY_BTN_LEFT2 }, { .key = KEY_BTN_RIGHT1 } };
+
+static void combo_tick(void)
+{
+	for (int i = 0; i < 2; ++i) {
+		if (combo[i].release_ticks && --combo[i].release_ticks == 0)
+			keyboard_inject_event(combo[i].key, KEY_STATE_RELEASED);
+	}
+}
+
+// returns true if the event must not be reported
+static bool combo_filter(char key, enum key_state state)
+{
+	const int i = (key == KEY_BTN_LEFT2) ? 0 : (key == KEY_BTN_RIGHT1) ? 1 : -1;
+	if (i < 0)
+		return false;
+	const int o = 1 - i;
+
+	switch (state) {
+	case KEY_STATE_PRESSED:
+		if (combo[o].pending) {
+			reg_set_value(REG_ID_CF2, reg_get_value(REG_ID_CF2) ^ CF2_TOUCH_KEYS);
+			combo[o].pending = false;
+			combo[o].swallow = true;
+			combo[i].swallow = true;
+		} else {
+			combo[i].pending = true;
+		}
+		return true;
+
+	case KEY_STATE_HOLD:
+		if (combo[i].swallow)
+			return true;
+		if (combo[i].pending) {
+			combo[i].pending = false;
+			keyboard_inject_event(key, KEY_STATE_PRESSED);
+		}
+		return false;
+
+	case KEY_STATE_RELEASED:
+		if (combo[i].swallow) {
+			combo[i].swallow = false;
+			return true;
+		}
+		if (combo[i].pending) {
+			combo[i].pending = false;
+			keyboard_inject_event(key, KEY_STATE_PRESSED);
+			combo[i].release_ticks = COMBO_RELEASE_TICKS;
+			return true;
+		}
+		return false;
+
+	default:
+		return false;
+	}
+}
+
 static void transition_to(struct list_item * const p_item, const enum key_state next_state)
 {
 	const struct entry * const p_entry = p_item->p_entry;
@@ -131,6 +201,9 @@ static void transition_to(struct list_item * const p_item, const enum key_state 
 	}
 
 	if (p_item->effective_key == '\0')
+		return;
+
+	if (combo_filter(p_item->effective_key, next_state))
 		return;
 
 	keyboard_inject_event(p_item->effective_key, next_state);
@@ -214,6 +287,8 @@ static int64_t timer_task(alarm_id_t id, void *user_data)
 {
 	(void)id;
 	(void)user_data;
+
+	combo_tick();
 
 	for (uint32_t c = 0; c < NUM_OF_COLS; ++c) {
 		gpio_pull_up(col_pins[c]);
